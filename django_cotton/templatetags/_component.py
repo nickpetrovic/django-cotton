@@ -183,6 +183,7 @@ class CottonComponentNode(Node):
         self.only = only
         self.active_library = active_library
         self._prepared_attrs = _prepare_attrs(attrs, active_library)
+        self._template = None
 
     def render(self, context):
         cotton_data = get_cotton_data(context)
@@ -271,36 +272,25 @@ class CottonComponentNode(Node):
         return output
 
     def _get_cached_template(self, context, attrs):
-        cache = context.render_context.get(self)
-        if cache is None:
-            cache = context.render_context[self] = {}
+        if self._template is not None:
+            return self._template
 
         template_path = self._generate_component_template_path(self.component_name, attrs.get("is"))
 
-        if template_path in cache:
-            return cache[template_path]
-
-        # Try to get the primary template
         try:
             template = get_template(template_path)
             if hasattr(template, "template"):
                 template = template.template
-            cache[template_path] = template
-            return template
         except TemplateDoesNotExist:
-            # If the primary template doesn't exist, try the fallback path (index.html)
             fallback_path = template_path.rsplit(".html", 1)[0] + "/index.html"
-
-            # Check if the fallback template is already cached
-            if fallback_path in cache:
-                return cache[fallback_path]
-
-            # Try to get the fallback template
             template = get_template(fallback_path)
             if hasattr(template, "template"):
                 template = template.template
-            cache[fallback_path] = template
-            return template
+
+        if self.component_name != "component":
+            self._template = template
+
+        return template
 
     def _create_partial_context(self, original_context, component_state):
         # Get the request object from the original context
