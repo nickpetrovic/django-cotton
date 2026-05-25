@@ -8,15 +8,28 @@ from django.template.base import (
     Origin,
     Parser,
     Template,
+    TextNode,
     UNKNOWN_SOURCE,
+    VariableNode,
+    render_value_in_context,
 )
 from django.template.engine import Engine
 from django.utils.safestring import mark_safe
 
 from django_cotton.utils import ensure_quoted
 
+# Fast-path constants for InlineTemplate classification.
+_FAST_NONE = 0
+_FAST_SINGLE_VAR = 1
+_FAST_TEXT_PLUS_VAR = 2
+
 
 class InlineTemplate:
+    __slots__ = (
+        "name", "origin", "engine", "source", "nodelist",
+        "_fast_path", "_text_prefix", "_filter_expr",
+    )
+
     def __init__(self, template_string: str, nodelist, engine, origin=None, name=None):
         self.name = name
         self.origin = origin or Origin(UNKNOWN_SOURCE)
@@ -24,7 +37,42 @@ class InlineTemplate:
         self.source = str(template_string)
         self.nodelist = nodelist
 
+        # Classify at compile time so render() can take a fast path.
+        self._fast_path = _FAST_NONE
+        self._text_prefix = None
+        self._filter_expr = None
+
+        nodes = nodelist
+        if len(nodes) == 1 and type(nodes[0]) is VariableNode:
+            # "{{ var }}" or "{{ var|filter }}"
+            self._fast_path = _FAST_SINGLE_VAR
+            self._filter_expr = nodes[0].filter_expression
+        elif (
+            len(nodes) == 2
+            and type(nodes[0]) is TextNode
+            and type(nodes[1]) is VariableNode
+        ):
+            # "prefix text{{ var }}"
+            self._fast_path = _FAST_TEXT_PLUS_VAR
+            self._text_prefix = nodes[0].s
+            self._filter_expr = nodes[1].filter_expression
+
     def render(self, context):
+        fast = self._fast_path
+
+        if fast == _FAST_SINGLE_VAR:
+            # Match VariableNode.render(): resolve then escape/localize.
+            return render_value_in_context(
+                self._filter_expr.resolve(context), context,
+            )
+
+        if fast == _FAST_TEXT_PLUS_VAR:
+            resolved = render_value_in_context(
+                self._filter_expr.resolve(context), context,
+            )
+            return mark_safe(self._text_prefix + resolved)
+
+        # General path -- full nodelist rendering with proper context state.
         with context.render_context.push_state(self):
             if context.template is None:
                 with context.bind_template(self):
